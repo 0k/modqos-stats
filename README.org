@@ -1,6 +1,222 @@
 #+TITLE: modqos-stats
 
-Executable =vps stats= plugin recording Apache =mod_qos= request
-counters in RRD files.
+* What it is and why
 
-Work in progress: the full documentation lands with the implementation.
+=modqos-stats= is an executable =vps stats= plugin. It fetches the
+machine-readable ~?auto~ page of Apache's =mod_qos= ~qos-viewer~ handler
+over plain HTTP. It tracks concurrent requests per virtual host against
+the configured request caps over time, so you can judge whether those
+caps are appropriate. Open Apache connections are recorded separately.
+The executable has no runtime dependencies and uses only Rust's standard
+library; the release artifact is one static musl binary.
+
+* Plugin contract
+
+This is the executable-plugin interface of =vps stats=. That program
+owns RRD creation, collection step and retention; this plugin supplies
+definitions and current samples, not RRD files.
+
+Invoke ~modqos-stats <action>~ with exactly one action. ~-h~ / ~--help~
+prints usage and ~-V~ / ~--version~ prints ~modqos-stats <version>~.
+
+** def
+
+~def~ needs neither config nor network. Its exact output is:
+
+#+begin_example
+conn all_conn:GAUGE:0:U
+qos current:GAUGE:0:U limit:GAUGE:0:U
+#+end_example
+
+The format is ~<schema> <ds>:<TYPE>:<min>:<max> ...~.
+~conn.all_conn~ means open Apache connections as counted by =mod_qos=.
+~qos.current~ means requests in progress; ~qos.limit~ is the configured
+cap. These are non-negative gauges, not cumulative counters.
+
+** collect
+
+~collect~ reads config, makes one HTTP GET, parses the complete page, and
+emits one connections record followed by request-limit records in page
+order. Exact line formats (single spaces, final newline):
+
+#+begin_example
+conn connections <N-or-U>
+qos qos/<encoded-host>_<port>/<loc-or-match>/<encoded-pattern> <current> <limit>
+#+end_example
+
+~loc~ represents ~QS_LocRequestLimit~; ~match~ represents
+~QS_LocRequestLimitMatch~. ~QS_AllConn~ supplies the connections value;
+if absent, it is ~U~ (unknown). An empty page is valid and produces only
+~conn connections U~. Other counter names are skipped with one warning
+per distinct name. Malformed records and duplicate ~QS_AllConn~ records
+are errors naming the page line number. Values are unsigned 64-bit
+integers.
+
+A non-empty page must end with a newline; otherwise it is rejected as
+truncated, even when its last record would parse on its own.
+
+Example:
+
+#+begin_example
+conn connections 91
+qos qos/git.example_443/loc/_2f 1 25
+qos qos/www.example_443/loc/_2flongpolling 0 15
+#+end_example
+
+** Path encoding
+
+Every UTF-8 byte outside ~[A-Za-z0-9.-]~ is replaced with ~_hh~, using
+two lowercase hex digits: ~/~ becomes ~_2f~, ~/~ followed by
+~longpolling~ becomes ~_2flongpolling~, and ~_~ becomes ~_5f~.
+An entire segment equal to ~.~ or ~..~ escapes every byte as ~_2e~ or
+~_2e_2e~. Raw ~.~ and ~..~ segments are non-canonical and rejected by
+~pretty~.
+Both host and pattern are encoded. The host/port segment appends
+~_<port>~; decode the port after that segment's last underscore.
+Segments longer than 200 bytes and empty patterns are errors, protecting
+downstream filenames. Decoding validates canonical encoding and UTF-8.
+
+** pretty
+
+~pretty~ reads and validates ~collect~ output from stdin; it does not
+load config or use the network:
+
+#+begin_src sh
+modqos-stats collect | modqos-stats pretty
+#+end_src
+
+For a page with three ~QS_LocRequestLimit~ rules and one
+~QS_LocRequestLimitMatch~ rule, the output is:
+
+#+begin_example
+connections: 72
+requests:
+  location                       current    limit
+  git.example:443/                     1       25
+  www.example:443/                     0       25
+  www.example:443/longpolling          0       15
+  www.example:8080 ~^/api/.*$          3       10
+#+end_example
+
+The layout nests under the resource title that =vps stats= prints above
+it, since =vps stats= indents every line of the plugin by two spaces.
+The first line is always ~connections: <value>~. A ~requests:~ section
+follows only when there is at least one qos record: a table indented by
+two spaces, made of a header line and one row per record.
+
+~location~ is the decoded host, a colon and the port, followed by the
+decoded pattern: appended directly for ~loc~ rules, after a space and a
+tilde for ~match~ rules, whose pattern is a regex. It is left-aligned;
+~current~ and ~limit~ are right-aligned, headers included. Each column
+is as wide as its longest header or cell, counted in characters.
+Columns are separated by four spaces and no line has trailing spaces.
+Rows are sorted by host, port, kind (~loc~ before ~match~), then
+pattern: strings in byte order, the port numerically. ~U~ is allowed for
+each numeric field and printed as ~U~.
+
+Colors are used only when the ~VPS_STATS_COLOR~ environment variable is
+exactly ~yes~ and ~NO_COLOR~ is unset or empty; in every other case the
+output contains no escape codes. With colors, the words ~connections~
+and ~requests~ are bold white (~\x1b[1;37m~ ... ~\x1b[0m~) with the
+colon and value uncolored, as in the resource title printed by
+=vps stats=, and the table header line is gray (~\x1b[1;30m~ ...
+~\x1b[0m~) after its uncolored indentation. Data rows are never
+colored. The plugin's stdout is a pipe, not a terminal, so =vps stats=
+passes its own color decision as ~VPS_STATS_COLOR=yes~ or ~no~.
+
+Empty stdin, unknown schemas, bad paths, incorrect field counts,
+duplicate connections records and invalid values are errors with line
+numbers. Decoded control characters are rejected to keep one row per
+record.
+A second ~conn connections~ record reports ~duplicate connections record~
+with its stdin line number.
+
+** Errors and exit codes
+
+| Code | Meaning |
+|------+---------|
+| 0 | Success (including help and version) |
+| 1 | Runtime error: config, HTTP, parsing or invalid stdin |
+| 2 | Usage error: missing/extra argument or unknown option |
+| 3 | Action not implemented: any other single non-option word |
+
+=vps stats= uses exit 3 to fall back to its own default action.
+Diagnostics go only to stderr, prefixed ~modqos-stats: error:~ or
+~modqos-stats: warning:~. On error stdout is empty: all protocol output
+is built in memory and printed only after successful validation.
+Duplicate request-limit output paths are errors naming both page line
+numbers, even when the counter values differ.
+Server-provided text in diagnostics escapes control characters (including
+DEL) as ~\xhh~ UTF-8 bytes and is limited to 200 displayed characters,
+with ~...~ appended when truncated. Escapes are never cut in the middle.
+
+* Apache setup
+
+Enable =mod_qos= and expose the handler on a plain-HTTP virtual host,
+restricted to your collector's private address. Documentation example
+addresses below are reserved, not deployment addresses.
+
+#+begin_src apache
+<Location /server-qos>
+    SetHandler qos-viewer
+    Require ip 192.0.2.1
+</Location>
+#+end_src
+
+Fetch ~http://www.example/server-qos?auto~. The ~?auto~ page lists
+counters for all virtual hosts, not only the virtual host used to fetch
+it. The parser follows the =mod_qos= 10.28 ~qos_ext_status_short~ forms,
+including regex patterns containing semicolons and closing brackets.
+
+* Config file
+
+Default path: ~/etc/modqos-stats/config.yml~. A non-empty
+~MODQOS_STATS_CONFIG~ environment variable overrides it. A missing or
+unreadable file is an error naming its path.
+
+#+begin_src yaml
+url: http://www.example/server-qos?auto
+timeout: 5 # seconds, minimum 1
+#+end_src
+
+~url~ is required; ~timeout~ defaults to 5 seconds and sets one overall
+deadline for connect, request writing and response reading. The strict flat YAML
+subset accepts blank lines, full-line ~#~ comments and ~key: value~
+records with an optional trailing comment (a space, ~#~, a space, text).
+Values may have matching single or double quotes; there is no escape
+processing. Indentation/nesting, a missing ~:~ separator, unknown or
+duplicate keys, empty values and invalid timeouts are rejected with a
+config line number.
+
+Only ~http://~ is supported, with hostname and optional port (default
+80; range 1-65535), default path ~/~ and the query preserved. ~https://~
+is explicitly refused: TLS would require an additional runtime
+dependency, contrary to the footprint requirement. Use a private HTTP
+endpoint protected by Apache's ~Require ip~, not a public unauthenticated
+endpoint. Whitespace, request-injection characters, userinfo and fragments
+are not accepted in URLs.
+
+HTTP uses ~HTTP/1.0~, a versioned User-Agent and ~Connection: close~.
+Every connect attempt, write and read uses the time remaining until the
+overall deadline. DNS resolution is unbounded: use an IP address in the
+URL if DNS may hang. The response, including headers, is
+capped at 1 MiB and read to EOF. Only ~HTTP/1.<digit> 200 ...~ responses
+and UTF-8 bodies are accepted. A ~Content-Length~ header (case-insensitive)
+must contain a non-negative integer matching the body byte length exactly;
+malformed lengths and mismatches are errors.
+
+* Development
+
+Tests use =indoc= for multiline fixtures, =similar= for full-output diffs,
+and =tempfile= for config isolation. Integration tests launch the built
+binary against an in-process loopback HTTP server on an ephemeral port.
+No live Apache service is required.
+
+#+begin_src sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+#+end_src
+
+Runtime dependencies stay empty; do not add CLI, HTTP, logging or YAML
+crates to the executable.
