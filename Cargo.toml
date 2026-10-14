@@ -1,0 +1,18 @@
+[package]
+name = "modqos-stats"
+version = "0.1.0"
+edition = "2021"
+description = "Executable ``vps stats`` plugin recording Apache mod_qos request counters in RRD files"
+license = "MIT"
+authors = ["Valentin Lab <valentin.lab@kalysto.org>"]
+
+# No runtime dependencies, by design: the binary must stay as small as
+# possible and build as one static musl executable (see AGENTS.md).
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
