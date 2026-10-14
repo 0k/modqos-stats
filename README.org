@@ -225,6 +225,18 @@ The musl target must already be installed; the builder never installs it.
 
 * Install
 
+Each release on GitHub attaches the static binary as
+~modqos-stats-<version>-x86_64-linux-musl~; ~bin/build~ produces the
+same file from a git clone. The crate is also on
+[[https://crates.io/crates/modqos-stats][crates.io]]; this builds a
+binary linked against the local C library instead:
+
+#+begin_src sh
+cargo install modqos-stats --locked
+#+end_src
+
+Install the binary as a =vps stats= plugin and create its config:
+
 #+begin_src sh
 install -D -m 755 dist/modqos-stats /etc/vps/stats.d/apache-qos
 install -d /etc/modqos-stats
@@ -244,7 +256,12 @@ No live Apache service is required. The builder tests use
 [[https://github.com/vaab/sunit][sunit]] and
 temporary output directories, never ~dist/~.
 
+In a git clone, run ~./autogen.sh~ first: it replaces the version
+placeholder in ~Cargo.toml~ with the version derived from the git tags,
+which the build, ~bin/build~ and the tests need.
+
 #+begin_src sh
+./autogen.sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test

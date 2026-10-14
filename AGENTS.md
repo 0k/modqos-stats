@@ -43,6 +43,12 @@ of truth for the output formats and exit codes.
 
 ## Checks before declaring work done
 
+Prerequisite: run `./autogen.sh` first in a git clone.  `Cargo.toml`
+holds `version = "%%version%%"`, which cargo rejects; `autogen.sh`
+substitutes the version derived from the git tags, leaving
+`Cargo.toml` locally modified, and cargo then rewrites the package
+version in `Cargo.lock` to match.  Never commit either change.
+
 1. `cargo fmt`
 2. `cargo clippy --all-targets --all-features` (no warnings)
 3. `cargo test`

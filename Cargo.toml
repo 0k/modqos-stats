@@ -1,10 +1,28 @@
 [package]
 name = "modqos-stats"
-version = "0.1.0"
+version = "%%version%%"
 edition = "2021"
+rust-version = "1.82"
 description = "vps stats plugin reporting Apache mod_qos request counters"
 license = "MIT"
 authors = ["Valentin Lab <valentin.lab@kalysto.org>"]
+repository = "https://github.com/0k/modqos-stats"
+readme = "README.md"
+keywords = ["apache", "mod_qos", "monitoring", "rrd", "plugin"]
+categories = ["command-line-utilities"]
+exclude = [
+    "README.org",
+    ".package.d/",
+    "autogen.sh",
+    ".gitchangelog.rc",
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    # Top-level developer tooling only (anchored): the musl build script
+    # and its ``sunit`` tests.
+    "/bin/",
+    "/test/",
+]
 
 # No runtime dependencies, by design: the binary must stay as small as
 # possible and build as one static musl executable (see AGENTS.md).
