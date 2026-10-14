@@ -205,18 +205,53 @@ and UTF-8 bodies are accepted. A ~Content-Length~ header (case-insensitive)
 must contain a non-negative integer matching the body byte length exactly;
 malformed lengths and mismatches are errors.
 
+* Build
+
+#+begin_src sh
+rustup target add x86_64-unknown-linux-musl
+bin/build
+bin/build --out-dir /path/to/output
+#+end_src
+
+The builder resolves the project root from its own path, runs the size-
+tuned release build and copies ~modqos-stats~ to ~dist/~ by default.
+It verifies no ~INTERP~ program header and no ~NEEDED~ dynamic entry
+with =readelf=, then runs and validates the artifact's ~--version~.
+Success prints only the absolute artifact path on stdout. Failed
+post-copy checks remove the rejected artifact.
+
+Required tools: =cargo=, =rustup=, =readelf= and GNU ~realpath~.
+The musl target must already be installed; the builder never installs it.
+
+* Install
+
+#+begin_src sh
+install -D -m 755 dist/modqos-stats /etc/vps/stats.d/apache-qos
+install -d /etc/modqos-stats
+# Create /etc/modqos-stats/config.yml using the example above.
+#+end_src
+
+The plugin filename, here ~apache-qos~, is the resource name used by
+=vps stats=. Schedule collection with that program (for example every
+two minutes); configure step and retention there, not in this plugin.
+
 * Development
 
 Tests use =indoc= for multiline fixtures, =similar= for full-output diffs,
 and =tempfile= for config isolation. Integration tests launch the built
 binary against an in-process loopback HTTP server on an ephemeral port.
-No live Apache service is required.
+No live Apache service is required. The builder tests use
+[[https://github.com/vaab/sunit][sunit]] and
+temporary output directories, never ~dist/~.
 
 #+begin_src sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+shellcheck bin/build bin/test
+bin/test
 #+end_src
 
-Runtime dependencies stay empty; do not add CLI, HTTP, logging or YAML
-crates to the executable.
+The shell runner stores profiles in the ignored ~.profiles/~ and keeps
+its temporary files under ~target/~. Runtime dependencies stay empty; do
+not add CLI, HTTP, logging or YAML crates to the executable.

@@ -1,0 +1,77 @@
+#!/bin/bash
+set -euo pipefail
+
+die() { printf 'build: error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'build: warning: %s\n' "$*" >&2; }
+info() { printf 'build: %s\n' "$*" >&2; }
+
+self_dir=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
+root=$(realpath -- "$self_dir/..")
+target=x86_64-unknown-linux-musl
+out_dir="$root/dist"
+
+while (($#)); do
+    case "$1" in
+        -h|--help)
+            (($# == 1)) || die 'help must be the only argument'
+            printf 'Usage: build [--out-dir DIR] [-h|--help]\n'
+            exit 0
+            ;;
+        --out-dir)
+            if (($# < 2)); then
+                die '--out-dir requires DIR'
+            fi
+            [[ -n "$2" && "$2" != -* ]] || die '--out-dir requires DIR'
+            out_dir=$2
+            shift 2
+            ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+
+for tool in cargo rustup readelf realpath cp; do
+    command -v "$tool" >/dev/null || die "required tool not on PATH: $tool"
+done
+installed=$(rustup target list --installed) || die 'cannot list installed Rust targets'
+[[ $'\n'"$installed"$'\n' == *$'\nx86_64-unknown-linux-musl\n'* ]] ||
+    die "musl target unavailable; run: rustup target add $target"
+
+version=''
+version_pattern='^version[[:space:]]*=[[:space:]]*"([^"]+)"'
+while IFS= read -r line; do
+    if [[ "$line" =~ $version_pattern ]]; then
+        version=${BASH_REMATCH[1]}
+        break
+    fi
+done < "$root/Cargo.toml"
+[[ -n "$version" ]] || die 'cannot read package version from Cargo.toml'
+
+info "building static $target release"
+(
+    cd "$root"
+    CARGO_TARGET_DIR="$root/target" cargo build --release --target "$target"
+) >&2 || die 'cargo build failed'
+
+mkdir -p -- "$out_dir" || die "cannot create output directory: $out_dir"
+out_dir=$(realpath -- "$out_dir") || die 'cannot resolve output directory'
+artifact="$out_dir/modqos-stats"
+[[ "$artifact" != "$root/target/$target/release/modqos-stats" ]] || die 'output directory must not be the cargo artifact directory'
+validated=false
+cleanup() {
+    if [[ "$validated" == false ]]; then
+        rm -f -- "$artifact" || warn "cannot remove rejected artifact: $artifact"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+cp -- "$root/target/$target/release/modqos-stats" "$artifact" || die 'cannot copy artifact'
+headers=$(readelf -lW "$artifact") || die 'cannot inspect program headers'
+dynamic=$(readelf -dW "$artifact") || die 'cannot inspect dynamic entries'
+[[ ! "$headers" =~ (^|[[:space:]])INTERP([[:space:]]|$) ]] || die 'artifact is not static: INTERP program header'
+[[ ! "$dynamic" =~ NEEDED ]] || die 'artifact is not static: NEEDED dynamic entry'
+# A sentinel preserves trailing newlines through command substitution.
+actual_version=$("$artifact" --version && printf '.') || die 'artifact --version failed'
+[[ "$actual_version" == "modqos-stats $version"$'\n.' ]] || die "unexpected artifact version: $actual_version"
+info 'verified static artifact'
+validated=true
+printf '%s\n' "$artifact"

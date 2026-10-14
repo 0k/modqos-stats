@@ -1,0 +1,96 @@
+# -*- mode: shell-script -*-
+# shellcheck shell=bash
+# sunit evaluates these command strings in child shells, not at declaration.
+# shellcheck disable=SC2016
+
+: "${base:?bin/test must provide base}" "${test_tmpdir:?sunit must provide test_tmpdir}"
+
+try '"$base/bin/build" --out-dir "$test_tmpdir/success"' "success: path only and executable artifact"
+is errlvl 0
+is out "$test_tmpdir/success/modqos-stats
+"
+
+try 'test -x "$test_tmpdir/success/modqos-stats"' "artifact exists and is executable"
+noerror
+
+try '
+headers=$(readelf -lW "$test_tmpdir/success/modqos-stats") || exit
+dynamic=$(readelf -dW "$test_tmpdir/success/modqos-stats") || exit
+[[ ! "$headers" =~ (^|[[:space:]])INTERP([[:space:]]|$) ]] &&
+[[ ! "$dynamic" =~ NEEDED ]]
+' "artifact is static: no INTERP and no NEEDED"
+noerror
+
+expected_version=''
+version_pattern='^version[[:space:]]*=[[:space:]]*"([^"]+)"'
+while IFS= read -r line; do
+    if [[ "$line" =~ $version_pattern ]]; then
+        expected_version=${BASH_REMATCH[1]}
+        break
+    fi
+done < "$base/Cargo.toml"
+
+try '"$test_tmpdir/success/modqos-stats" --version' "artifact version"
+noerror
+is out "modqos-stats $expected_version
+"
+
+try '"$base/bin/build" --help' "builder help"
+noerror
+is out "Usage: build [--out-dir DIR] [-h|--help]
+"
+
+try '"$base/bin/build" --unknown' "builder rejects unknown option"
+is errlvl 1
+is out ""
+is err part "unknown argument"
+
+try '"$base/bin/build" --out-dir' "builder requires output directory argument"
+is errlvl 1
+is out ""
+is err part "requires DIR"
+
+setup() {
+    mkdir -p "$test_tmpdir/mockbin"
+    cat > "$test_tmpdir/mockbin/rustup" <<'SH'
+#!/bin/bash
+printf '%s\n' x86_64-unknown-linux-gnu
+SH
+    chmod +x "$test_tmpdir/mockbin/rustup"
+}
+
+try 'PATH="$test_tmpdir/mockbin:$PATH" "$base/bin/build" --out-dir "$test_tmpdir/no-target"' "missing musl target gives installation command"
+is errlvl 1
+is out ""
+is err part "rustup target add x86_64-unknown-linux-musl"
+
+try 'test ! -e "$test_tmpdir/no-target/modqos-stats"' "missing target leaves no artifact"
+noerror
+
+setup() {
+    mkdir -p "$test_tmpdir/checkbin"
+    cat > "$test_tmpdir/checkbin/readelf" <<'SH'
+#!/bin/bash
+case "$MODQOS_TEST_CHECK:$1" in
+    interp:-lW) printf '  INTERP\n' ;;
+    needed:-dW) printf '  (NEEDED) Shared library\n' ;;
+esac
+SH
+    chmod +x "$test_tmpdir/checkbin/readelf"
+}
+
+try 'MODQOS_TEST_CHECK=interp PATH="$test_tmpdir/checkbin:$PATH" "$base/bin/build" --out-dir "$test_tmpdir/interp"' "INTERP check rejects copied artifact"
+is errlvl 1
+is out ""
+is err part "INTERP program header"
+
+try 'test ! -e "$test_tmpdir/interp/modqos-stats"' "INTERP failure removes artifact"
+noerror
+
+try 'MODQOS_TEST_CHECK=needed PATH="$test_tmpdir/checkbin:$PATH" "$base/bin/build" --out-dir "$test_tmpdir/needed"' "NEEDED check rejects copied artifact"
+is errlvl 1
+is out ""
+is err part "NEEDED dynamic entry"
+
+try 'test ! -e "$test_tmpdir/needed/modqos-stats"' "NEEDED failure removes artifact"
+noerror

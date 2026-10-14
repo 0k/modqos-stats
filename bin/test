@@ -1,0 +1,10 @@
+#!/bin/bash
+self_dir=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
+base=$(realpath -- "$self_dir/..")
+export base
+export PROFILE_STORE_DIR="$base/.profiles"
+# Keep sunit's per-file temporary directories inside this project.
+mkdir -p -- "$base/target/test-tmp" || exit 1
+export TMPDIR="$base/target/test-tmp"
+cd "$base/test" || exit 1
+exec sunit -e helpers.sh "$@"
