@@ -227,13 +227,7 @@ The musl target must already be installed; the builder never installs it.
 
 Each release on GitHub attaches the static binary as
 ~modqos-stats-<version>-x86_64-linux-musl~; ~bin/build~ produces the
-same file from a git clone. The crate is also on
-[[https://crates.io/crates/modqos-stats][crates.io]]; this builds a
-binary linked against the local C library instead:
-
-#+begin_src sh
-cargo install modqos-stats --locked
-#+end_src
+same file from a git clone.
 
 Install the binary as a =vps stats= plugin and create its config:
 

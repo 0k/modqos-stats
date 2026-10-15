@@ -1,0 +1,4 @@
+# Packaging choices: a GitHub release page with the static musl binary;
+# not published on crates.io.
+github-release
+static-binary
